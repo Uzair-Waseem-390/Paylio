@@ -398,190 +398,120 @@ def mark_invoice_as_pending(request, pk):
 
 # # ========== Template Rendering View =========
 
+from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework.exceptions import AuthenticationFailed
+from .models import Invoice
+
+# ========== Template Rendering View ==========
+
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([])  # Temporarily empty to handle authentication manually
 def render_invoice_template(request, pk):
     """
     Render invoice in selected template for browser viewing/printing
+    Accepts JWT token via query parameter for authentication
     """
-    invoice = get_object_or_404(Invoice, pk=pk, user=request.user)
-    
-    # Use f-strings instead of % formatting to avoid CSS conflicts
-    status_color = '#28a745' if invoice.status == 'Received' else '#ffc107'
-    
-    template_style = f"""
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 40px; }}
-        .invoice-header {{ text-align: center; margin-bottom: 30px; }}
-        .invoice-details {{ margin-bottom: 20px; }}
-        table {{ width: 100%; border-collapse: collapse; }}
-        th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }}
-        .total {{ font-size: 1.2em; font-weight: bold; text-align: right; margin-top: 20px; }}
-        .status {{ color: {status_color}; font-weight: bold; }}
-        .badge {{
-            display: inline-block;
-            padding: 5px 10px;
-            border-radius: 4px;
-            font-size: 0.9em;
-        }}
-        .badge-success {{ background-color: #d4edda; color: #155724; }}
-        .badge-warning {{ background-color: #fff3cd; color: #856404; }}
-    </style>
-    """
-    
-    # Create different templates based on selection
-    if invoice.template_name == 'Template 2 (Minimal)':
-        template_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Invoice #{invoice.id}</title>
-            {template_style}
-            <style>
-                body {{ font-family: 'Helvetica', sans-serif; max-width: 800px; margin: 0 auto; }}
-                .header {{ border-bottom: 2px solid #333; padding-bottom: 20px; margin-bottom: 30px; }}
-                .client-section {{ background: #f9f9f9; padding: 20px; margin-bottom: 30px; }}
-                .amount {{ font-size: 2em; color: #333; }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>INVOICE #{invoice.id}</h1>
-                <p>Date: {invoice.issue_date}</p>
-            </div>
-            
-            <div class="client-section">
-                <h3>Bill To:</h3>
-                <p><strong>{invoice.client_name}</strong><br>
-                {invoice.client_email}<br>
-                {invoice.client_address}</p>
-            </div>
-            
-            <table>
-                <tr>
-                    <th>Description</th>
-                    <th>Amount</th>
-                    <th>Tax</th>
-                    <th>Total</th>
-                </tr>
-                <tr>
-                    <td>{invoice.description}</td>
-                    <td>${invoice.amount}</td>
-                    <td>{invoice.tax_percentage or 0}%</td>
-                    <td><strong>${invoice.total_amount}</strong></td>
-                </tr>
-            </table>
-            
-            <div class="total">
-                <p>Total Due: <strong>${invoice.total_amount}</strong></p>
-                <p>Due Date: {invoice.due_date}</p>
-                <p>Status: <span class="badge badge-{'success' if invoice.status == 'Received' else 'warning'}">{invoice.status}</span></p>
-            </div>
-        </body>
-        </html>
+    try:
+        user = None
+        
+        # Method 1: Check for token in Authorization header
+        auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+            try:
+                jwt_auth = JWTAuthentication()
+                validated_token = jwt_auth.get_validated_token(token)
+                user = jwt_auth.get_user(validated_token)
+            except Exception as e:
+                print(f"Header token validation error: {e}")
+        
+        # Method 2: Check for token in query params
+        if not user:
+            token_param = request.query_params.get('token')
+            if token_param:
+                try:
+                    jwt_auth = JWTAuthentication()
+                    validated_token = jwt_auth.get_validated_token(token_param)
+                    user = jwt_auth.get_user(validated_token)
+                except Exception as e:
+                    print(f"Query param token validation error: {e}")
+        
+        # If still no user, return 401
+        if not user:
+            return HttpResponse(
+                "Authentication required. Please log in again.",
+                status=401,
+                content_type='text/plain'
+            )
+        
+        # Get invoice and verify ownership
+        invoice = get_object_or_404(Invoice, pk=pk)
+        
+        # Check if invoice belongs to the authenticated user
+        if invoice.user != user:
+            return HttpResponse(
+                "You don't have permission to view this invoice.",
+                status=403,
+                content_type='text/plain'
+            )
+        
+        # Use f-strings instead of % formatting to avoid CSS conflicts
+        status_color = '#28a745' if invoice.status == 'Received' else '#ffc107'
+        
+        template_style = f"""
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 40px; }}
+            .invoice-header {{ text-align: center; margin-bottom: 30px; }}
+            .invoice-details {{ margin-bottom: 20px; }}
+            table {{ width: 100%; border-collapse: collapse; }}
+            th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }}
+            .total {{ font-size: 1.2em; font-weight: bold; text-align: right; margin-top: 20px; }}
+            .status {{ color: {status_color}; font-weight: bold; }}
+            .badge {{
+                display: inline-block;
+                padding: 5px 10px;
+                border-radius: 4px;
+                font-size: 0.9em;
+            }}
+            .badge-success {{ background-color: #d4edda; color: #155724; }}
+            .badge-warning {{ background-color: #fff3cd; color: #856404; }}
+            @media print {{
+                body {{ margin: 0; padding: 20px; }}
+                .no-print {{ display: none; }}
+            }}
+        </style>
         """
-    
-    elif invoice.template_name == 'Template 3 (Corporate)':
-        template_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Invoice #{invoice.id}</title>
-            {template_style}
-            <style>
-                body {{ font-family: 'Times New Roman', serif; }}
-                .corporate-header {{ background: #2c3e50; color: white; padding: 30px; margin-bottom: 40px; }}
-                .corporate-header h1 {{ margin: 0; }}
-                .details-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 40px; }}
-                .amount-box {{ background: #ecf0f1; padding: 20px; text-align: center; }}
-                .amount-box .number {{ font-size: 2.5em; color: #2c3e50; }}
-            </style>
-        </head>
-        <body>
-            <div class="corporate-header">
-                <h1>INVOICE</h1>
-                <p>Invoice #{invoice.id}</p>
-            </div>
-            
-            <div class="details-grid">
-                <div>
-                    <h3>Client Information</h3>
+        
+        # Create different templates based on selection
+        if invoice.template_name == 'Template 2 (Minimal)':
+            template_html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Invoice #{invoice.id}</title>
+                {template_style}
+                <style>
+                    body {{ font-family: 'Helvetica', sans-serif; max-width: 800px; margin: 0 auto; }}
+                    .header {{ border-bottom: 2px solid #333; padding-bottom: 20px; margin-bottom: 30px; }}
+                    .client-section {{ background: #f9f9f9; padding: 20px; margin-bottom: 30px; }}
+                    .amount {{ font-size: 2em; color: #333; }}
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <h1>INVOICE #{invoice.id}</h1>
+                    <p>Date: {invoice.issue_date}</p>
+                </div>
+                
+                <div class="client-section">
+                    <h3>Bill To:</h3>
                     <p><strong>{invoice.client_name}</strong><br>
                     {invoice.client_email}<br>
                     {invoice.client_address}</p>
-                </div>
-                <div>
-                    <h3>Invoice Details</h3>
-                    <p><strong>Issue Date:</strong> {invoice.issue_date}<br>
-                    <strong>Due Date:</strong> {invoice.due_date}<br>
-                    <strong>Status:</strong> <span class="badge badge-{'success' if invoice.status == 'Received' else 'warning'}">{invoice.status}</span></p>
-                </div>
-            </div>
-            
-            <table>
-                <tr>
-                    <th>Description</th>
-                    <th>Amount</th>
-                    <th>Tax (%)</th>
-                    <th>Total</th>
-                </tr>
-                <tr>
-                    <td>{invoice.description}</td>
-                    <td>${invoice.amount}</td>
-                    <td>{invoice.tax_percentage or 0}%</td>
-                    <td>${invoice.total_amount}</td>
-                </tr>
-            </table>
-            
-            <div class="amount-box">
-                <p>Total Amount Due</p>
-                <p class="number">${invoice.total_amount}</p>
-            </div>
-        </body>
-        </html>
-        """
-    
-    else:  # Template 1 (Modern) and default
-        template_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Invoice #{invoice.id}</title>
-            {template_style}
-            <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }}
-                .modern-header {{ 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white;
-                    padding: 40px;
-                    border-radius: 10px 10px 0 0;
-                }}
-                .content {{ padding: 40px; }}
-                .info-row {{ display: flex; justify-content: space-between; margin-bottom: 30px; }}
-                .info-box {{ flex: 1; }}
-                .info-box:first-child {{ margin-right: 20px; }}
-            </style>
-        </head>
-        <body>
-            <div class="modern-header">
-                <h1>INVOICE</h1>
-                <h2>#{invoice.id}</h2>
-            </div>
-            
-            <div class="content">
-                <div class="info-row">
-                    <div class="info-box">
-                        <h3>Client Details</h3>
-                        <p><strong>{invoice.client_name}</strong><br>
-                        {invoice.client_email}<br>
-                        {invoice.client_address}</p>
-                    </div>
-                    <div class="info-box">
-                        <h3>Invoice Details</h3>
-                        <p><strong>Issue Date:</strong> {invoice.issue_date}<br>
-                        <strong>Due Date:</strong> {invoice.due_date}<br>
-                        <strong>Status:</strong> <span class="status">{invoice.status}</span></p>
-                    </div>
                 </div>
                 
                 <table>
@@ -600,16 +530,160 @@ def render_invoice_template(request, pk):
                 </table>
                 
                 <div class="total">
-                    <p>Total Amount: <strong>${invoice.total_amount}</strong></p>
+                    <p>Total Due: <strong>${invoice.total_amount}</strong></p>
+                    <p>Due Date: {invoice.due_date}</p>
+                    <p>Status: <span class="badge badge-{'success' if invoice.status == 'Received' else 'warning'}">{invoice.status}</span></p>
                 </div>
-            </div>
-        </body>
-        </html>
+            </body>
+            </html>
+            """
+        
+        elif invoice.template_name == 'Template 3 (Corporate)':
+            template_html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Invoice #{invoice.id}</title>
+                {template_style}
+                <style>
+                    body {{ font-family: 'Times New Roman', serif; }}
+                    .corporate-header {{ background: #2c3e50; color: white; padding: 30px; margin-bottom: 40px; }}
+                    .corporate-header h1 {{ margin: 0; }}
+                    .details-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 40px; }}
+                    .amount-box {{ background: #ecf0f1; padding: 20px; text-align: center; }}
+                    .amount-box .number {{ font-size: 2.5em; color: #2c3e50; }}
+                </style>
+            </head>
+            <body>
+                <div class="corporate-header">
+                    <h1>INVOICE</h1>
+                    <p>Invoice #{invoice.id}</p>
+                </div>
+                
+                <div class="details-grid">
+                    <div>
+                        <h3>Client Information</h3>
+                        <p><strong>{invoice.client_name}</strong><br>
+                        {invoice.client_email}<br>
+                        {invoice.client_address}</p>
+                    </div>
+                    <div>
+                        <h3>Invoice Details</h3>
+                        <p><strong>Issue Date:</strong> {invoice.issue_date}<br>
+                        <strong>Due Date:</strong> {invoice.due_date}<br>
+                        <strong>Status:</strong> <span class="badge badge-{'success' if invoice.status == 'Received' else 'warning'}">{invoice.status}</span></p>
+                    </div>
+                </div>
+                
+                <table>
+                    <tr>
+                        <th>Description</th>
+                        <th>Amount</th>
+                        <th>Tax (%)</th>
+                        <th>Total</th>
+                    </tr>
+                    <tr>
+                        <td>{invoice.description}</td>
+                        <td>${invoice.amount}</td>
+                        <td>{invoice.tax_percentage or 0}%</td>
+                        <td>${invoice.total_amount}</td>
+                    </tr>
+                </table>
+                
+                <div class="amount-box">
+                    <p>Total Amount Due</p>
+                    <p class="number">${invoice.total_amount}</p>
+                </div>
+            </body>
+            </html>
+            """
+        
+        else:  # Template 1 (Modern) and default
+            template_html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Invoice #{invoice.id}</title>
+                {template_style}
+                <style>
+                    body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }}
+                    .modern-header {{ 
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                        padding: 40px;
+                        border-radius: 10px 10px 0 0;
+                    }}
+                    .content {{ padding: 40px; }}
+                    .info-row {{ display: flex; justify-content: space-between; margin-bottom: 30px; }}
+                    .info-box {{ flex: 1; }}
+                    .info-box:first-child {{ margin-right: 20px; }}
+                </style>
+            </head>
+            <body>
+                <div class="modern-header">
+                    <h1>INVOICE</h1>
+                    <h2>#{invoice.id}</h2>
+                </div>
+                
+                <div class="content">
+                    <div class="info-row">
+                        <div class="info-box">
+                            <h3>Client Details</h3>
+                            <p><strong>{invoice.client_name}</strong><br>
+                            {invoice.client_email}<br>
+                            {invoice.client_address}</p>
+                        </div>
+                        <div class="info-box">
+                            <h3>Invoice Details</h3>
+                            <p><strong>Issue Date:</strong> {invoice.issue_date}<br>
+                            <strong>Due Date:</strong> {invoice.due_date}<br>
+                            <strong>Status:</strong> <span class="status">{invoice.status}</span></p>
+                        </div>
+                    </div>
+                    
+                    <table>
+                        <tr>
+                            <th>Description</th>
+                            <th>Amount</th>
+                            <th>Tax</th>
+                            <th>Total</th>
+                        </tr>
+                        <tr>
+                            <td>{invoice.description}</td>
+                            <td>${invoice.amount}</td>
+                            <td>{invoice.tax_percentage or 0}%</td>
+                            <td><strong>${invoice.total_amount}</strong></td>
+                        </tr>
+                    </table>
+                    
+                    <div class="total">
+                        <p>Total Amount: <strong>${invoice.total_amount}</strong></p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+        
+        # Add print button at the bottom
+        print_button = """
+        <div class="no-print" style="text-align: center; margin-top: 30px; padding: 20px;">
+            <button onclick="window.print()" style="background: #3b82f6; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">
+                🖨️ Print / Save as PDF
+            </button>
+        </div>
         """
-    
-    # Return as HTML response (not JSON) for proper browser rendering
-    from django.http import HttpResponse
-    return HttpResponse(template_html)
-
-
-
+        
+        # Insert print button before closing body tag
+        template_html = template_html.replace('</body>', f'{print_button}</body>')
+        
+        return HttpResponse(template_html)
+        
+    except Exception as e:
+        print(f"Error in render view: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return HttpResponse(
+            f"An error occurred: {str(e)}",
+            status=500,
+            content_type='text/plain'
+        )
